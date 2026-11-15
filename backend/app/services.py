@@ -207,6 +207,12 @@ class SnackService:
                     f"({volunteer.office_id}), not {request.office_id}."
                 )
 
+            # A volunteer who already declined / handed off this request cannot re-accept it
+            if volunteer_id in request.declined_by:
+                raise ValueError(
+                    f"Volunteer {volunteer_id} has already handed over request #{request_id}"
+                )
+
             # Validate estimated amount
             if estimated_amount <= Decimal("0"):
                 raise ValueError("Estimated amount must be positive")
@@ -396,24 +402,37 @@ class SnackService:
             if not volunteer:
                 raise ValueError(f"Volunteer not found: {volunteer_id}")
 
+            # Validate purchase amount fits in available budget once the reservation is released
+            current_available = self.repos.budgets.available_budget(request.office_id)
+            reserved_for_this = (
+                request.estimated_amount
+                if (request.reservation_active and request.estimated_amount)
+                else Decimal("0")
+            )
+            available_after_release = current_available + reserved_for_this
+            if purchase_amount > available_after_release:
+                raise ValueError(
+                    f"Purchase amount {purchase_amount} {office.currency.value} "
+                    f"exceeds remaining budget {available_after_release} {office.currency.value}"
+                )
+
+            # Submit reimbursement claim to external HR system BEFORE mutating local state
+            # so an integration failure never corrupts the refill or budget state
+            external_hr_id = self.hr.submit_claim(
+                employee_name=volunteer.name,
+                office_name=office.name,
+                amount=str(purchase_amount),
+                currency=office.currency.value,
+                receipt_reference=receipt_reference,
+                description=f"Snack refill for {office.name} office (request #{request_id})",
+            )
+
             # Release reservation ONCE (guard against double-release)
             if request.reservation_active:
                 self.repos.budgets.release_reservation(
                     request.office_id, request.estimated_amount
                 )
                 request.reservation_active = False
-
-            # Validate purchase amount fits in available budget
-            # (after releasing the reservation, so we see the true remaining budget)
-            available_after_release = self.repos.budgets.available_budget(request.office_id)
-            if purchase_amount > available_after_release:
-                # Re-reserve to restore consistent state
-                self.repos.budgets.reserve(request.office_id, request.estimated_amount)
-                request.reservation_active = True
-                raise ValueError(
-                    f"Purchase amount {purchase_amount} {office.currency.value} "
-                    f"exceeds remaining budget {available_after_release} {office.currency.value}"
-                )
 
             # Record actual spend ONCE
             self.repos.budgets.record_actual_spend(request.office_id, purchase_amount)
@@ -425,16 +444,6 @@ class SnackService:
 
             # Mark counter FILLED immediately
             self.repos.counters.update_status(request.counter_id, CounterStatus.FILLED)
-
-            # Create reimbursement claim and submit to HR
-            external_hr_id = self.hr.submit_claim(
-                employee_name=volunteer.name,
-                office_name=office.name,
-                amount=str(purchase_amount),
-                currency=office.currency.value,
-                receipt_reference=receipt_reference,
-                description=f"Snack refill for {office.name} office (request #{request_id})",
-            )
 
             claim = ReimbursementClaim(
                 id=generate_id(),
@@ -541,6 +550,8 @@ class SnackService:
 
             claim.status = ClaimStatus.REIMBURSED
             claim.reimbursed_at = datetime.utcnow()
+            if claim.external_hr_claim_id:
+                self.hr.reimburse(claim.external_hr_claim_id)
             return claim
 
     # ──────────────────────────────────────────────
@@ -648,6 +659,31 @@ class SnackService:
                 }
                 for r in completed_requests
             ],
+        }
+
+    def get_combined_monthly_report(self, year: int, month: int) -> dict:
+        """
+        Single monthly report covering all offices while keeping NOK and INR
+        strictly separated by currency (never adding NOK and INR together).
+        """
+        office_reports: dict[str, dict] = {}
+        totals_by_currency: dict[str, Decimal] = {}
+
+        for office in self.get_offices():
+            rep = self.get_monthly_report(office.id, year, month)
+            office_reports[office.id] = rep
+            cur = office.currency.value
+            totals_by_currency[cur] = totals_by_currency.get(cur, Decimal("0")) + Decimal(
+                rep["total_spent"]
+            )
+
+        return {
+            "year": year,
+            "month": month,
+            "offices": office_reports,
+            "totals_by_currency": {
+                cur: str(amount) for cur, amount in totals_by_currency.items()
+            },
         }
 
     # ──────────────────────────────────────────────

@@ -260,8 +260,10 @@ class TestFairnessRotation:
 
     def test_reject_request_assigns_next_in_fairness_queue(self, svc, app_repos):
         """
-        When a volunteer rejects a request, it releases any budget reservation and
-        assigns the request to the next volunteer in the least-recently-assigned queue.
+        When a volunteer rejects or hands over an uncompleted request:
+        - It releases any active budget reservation.
+        - It assigns the request to the next volunteer in the fairness queue.
+        - The original volunteer cannot re-accept or complete the assignment after handoff.
         """
         make_oslo_office(app_repos)
         make_counter(app_repos, "oslo")
@@ -278,12 +280,36 @@ class TestFairnessRotation:
         )
 
         req = svc.report_empty_counter("oslo", "emp-01")
-        # First volunteer (vol-never) rejects -> should assign to vol-old (next in fairness queue)
+        # 1. First volunteer (vol-never) rejects while OPEN -> assigns to vol-old
         updated = svc.reject_refill_request(req.id, "vol-never")
         assert updated.assigned_to == "vol-old"
         assert "vol-never" in updated.declined_by
 
-        # If vol-old also rejects -> should assign to vol-recent
+        # 2. vol-old accepts the request (reserving 800 NOK), then cannot complete it and hands it off
+        svc.accept_refill_request(req.id, "vol-old", Decimal("800"))
+        assert svc.get_budget_snapshot("oslo").active_reservations == Decimal("800")
+
         updated2 = svc.reject_refill_request(req.id, "vol-old")
         assert updated2.assigned_to == "vol-recent"
         assert "vol-old" in updated2.declined_by
+        # Reservation from vol-old must be released upon handoff
+        assert svc.get_budget_snapshot("oslo").active_reservations == Decimal("0")
+        assert svc.get_budget_snapshot("oslo").available == Decimal("6000")
+
+        # 3. Original volunteer (vol-old) cannot re-accept or complete after handoff
+        with pytest.raises(ValueError, match="already handed over"):
+            svc.accept_refill_request(req.id, "vol-old", Decimal("500"))
+        with pytest.raises(ValueError):
+            svc.complete_purchase(req.id, "vol-old", Decimal("500"), "RCPT-OLD")
+
+        # 4. New volunteer (vol-recent) accepts; original volunteer still cannot complete
+        svc.accept_refill_request(req.id, "vol-recent", Decimal("700"))
+        with pytest.raises(ValueError, match="not assigned"):
+            svc.complete_purchase(req.id, "vol-old", Decimal("650"), "RCPT-OLD")
+
+        # 5. New volunteer completes the purchase
+        completed_req, claim = svc.complete_purchase(
+            req.id, "vol-recent", Decimal("650"), "RCPT-RECENT-01"
+        )
+        assert completed_req.status == RefillStatus.COMPLETED
+        assert claim.employee_id == "vol-recent"

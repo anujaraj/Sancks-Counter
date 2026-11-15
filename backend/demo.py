@@ -144,8 +144,8 @@ def run_demo() -> None:
 
     print_header("7. MONTHLY SPENDING REPORTS (SEPARATE CURRENCIES)")
     now = datetime.utcnow()
-    for office_id in ("oslo", "bengaluru"):
-        report = svc.get_monthly_report(office_id, now.year, now.month)
+    combined = svc.get_combined_monthly_report(now.year, now.month)
+    for office_id, report in combined["offices"].items():
         print(
             f"Report [{report['office_name']} - {report['currency']}]: "
             f"Spent={report['total_spent']} {report['currency']}, "
@@ -153,6 +153,7 @@ def run_demo() -> None:
             f"Refills={report['completed_refills']}, "
             f"Claims(Pending={report['claims_pending']}, Approved={report['claims_approved']}, Reimbursed={report['claims_reimbursed']})"
         )
+    print(f"Combined Totals by Currency (NOK & INR never added): {combined['totals_by_currency']}")
 
     print("\n✅ Demo workflow completed successfully!")
 

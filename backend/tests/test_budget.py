@@ -242,6 +242,23 @@ class TestCurrencyIsolation:
         assert oslo_snap.currency.value == "NOK"
         assert blr_snap.currency.value == "INR"
 
+        # Now run a Bengaluru purchase in INR and verify combined monthly report
+        req_blr = svc.report_empty_counter("bengaluru", "blr-emp")
+        svc.accept_refill_request(req_blr.id, "blr-vol", Decimal("2000"))
+        svc.complete_purchase(req_blr.id, "blr-vol", Decimal("1750.50"), "RCPT-IN-01")
+
+        blr_snap_after = svc.get_budget_snapshot("bengaluru")
+        assert blr_snap_after.actual_spent == Decimal("1750.50")
+        assert blr_snap_after.available == Decimal("13249.50")
+        assert svc.get_budget_snapshot("oslo").actual_spent == Decimal("950")
+
+        from datetime import datetime
+        now = datetime.utcnow()
+        combined = svc.get_combined_monthly_report(now.year, now.month)
+        assert combined["totals_by_currency"] == {"NOK": "950", "INR": "1750.50"}
+        assert combined["offices"]["oslo"]["currency"] == "NOK"
+        assert combined["offices"]["bengaluru"]["currency"] == "INR"
+
     def test_budget_full_cycle_numbers(self, svc, app_repos):
         """
         Numerical example matching the assignment specification:

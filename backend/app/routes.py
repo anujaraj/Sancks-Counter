@@ -469,6 +469,22 @@ def get_budget(office_id: str, svc: SnackService = Depends(get_service)):
 # ── Reports ───────────────────────────────────────────────────────────────────
 
 @router.get(
+    "/reports/monthly",
+    tags=["Reports"],
+)
+def combined_monthly_report(
+    year: int = Query(default=datetime.utcnow().year),
+    month: int = Query(default=datetime.utcnow().month),
+    svc: SnackService = Depends(get_service),
+):
+    """
+    Management monthly report covering all offices with currency-specific totals
+    (NOK and INR are never added together).
+    """
+    return svc.get_combined_monthly_report(year, month)
+
+
+@router.get(
     "/offices/{office_id}/report",
     tags=["Reports"],
 )

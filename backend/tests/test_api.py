@@ -343,3 +343,13 @@ class TestMonthlyReportEndpoint:
         data = resp.json()
         assert data["currency"] == "NOK"
         assert data["office_name"] == "Oslo"
+
+        # Also verify the combined management monthly report endpoint
+        combined_resp = oslo_client.get(
+            f"/api/reports/monthly?year={now.year}&month={now.month}"
+        )
+        assert combined_resp.status_code == 200
+        combined_data = combined_resp.json()
+        assert "offices" in combined_data
+        assert "oslo" in combined_data["offices"]
+        assert combined_data["totals_by_currency"]["NOK"] == "0"

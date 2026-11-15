@@ -169,6 +169,15 @@ class MockHRService:
         claim["review_note"] = reason
         return True
 
+    def reimburse(self, external_id: str) -> bool:
+        """Simulate HR/finance marking an approved claim as reimbursed."""
+        claim = self._claims.get(external_id)
+        if not claim:
+            return False
+        claim["status"] = "REIMBURSED"
+        claim["reimbursed_at"] = datetime.utcnow().isoformat()
+        return True
+
 
 # Singletons — shared across the process, same as repositories
 chat_service = MockChatService()
